@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use anyhow::Result;
+use std::path::PathBuf;
 
 use gpui::{
     App, Application, AssetSource, Bounds, Context, SharedString, Size, Window,
@@ -19,10 +19,12 @@ use gpui_component::theme::Theme;
 use gpui::{WindowKind, layer_shell::*};
 
 // Embed custom fonts
-const INTER_REGULAR: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Regular.ttf");
+const INTER_REGULAR: &[u8] =
+    include_bytes!("../../fs/library/shared/fonts/InterDisplay-Regular.ttf");
 const INTER_LIGHT: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Light.ttf");
 const INTER_MEDIUM: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Medium.ttf");
-const INTER_SEMIBOLD: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-SemiBold.ttf");
+const INTER_SEMIBOLD: &[u8] =
+    include_bytes!("../../fs/library/shared/fonts/InterDisplay-SemiBold.ttf");
 const INTER_BOLD: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Bold.ttf");
 
 struct Assets {
@@ -59,14 +61,14 @@ struct Shell {
 impl Shell {
     fn new(cx: &mut Context<Self>) -> Self {
         println!("=== Mochi Desktop Shell Initializing ===");
-        
+
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         println!("HOME directory: {}", home);
-        
+
         let background_path = PathBuf::from(&home).join("Photos/Default.jpg");
         println!("Looking for background at: {:?}", background_path);
         println!("Background path exists: {}", background_path.exists());
-        
+
         if background_path.exists() {
             if let Ok(metadata) = std::fs::metadata(&background_path) {
                 println!("Background file size: {} bytes", metadata.len());
@@ -76,16 +78,17 @@ impl Shell {
         println!("=== Shell Initialization Complete ===\n");
         println!("NOTE: Launch bar separately with: /opt/mochidesktop/bar");
 
-        Shell {
-            background_path,
-        }
+        Shell { background_path }
     }
 }
 
 impl Render for Shell {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        println!("DEBUG: Render called - background_path: {:?}", self.background_path);
-        
+        println!(
+            "DEBUG: Render called - background_path: {:?}",
+            self.background_path
+        );
+
         div()
             .flex()
             .relative()
@@ -100,7 +103,7 @@ impl Render for Shell {
                     .object_fit(gpui::ObjectFit::Cover)
                     .absolute()
                     .top_0()
-                    .left_0()
+                    .left_0(),
             )
     }
 }
@@ -127,7 +130,7 @@ fn main() {
                     std::borrow::Cow::Borrowed(INTER_SEMIBOLD),
                 ])
                 .expect("Failed to load fonts");
-            
+
             // Set up theme with Inter Variable font
             let mut theme = Theme::default();
             theme.font_family = "Inter Variable".into();
