@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, SharedString, Size, Window,
+    App, Application, AssetSource, Bounds, Context, SharedString, Size, TextRenderingMode, Window,
     WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions, div, point,
     prelude::*, px, rgb, rgba, svg, white,
 };
@@ -23,12 +23,12 @@ use gpui::{layer_shell::*, WindowKind};
 
 // Embed custom fonts
 const INTER_REGULAR: &[u8] =
-    include_bytes!("../../fs/library/shared/fonts/InterDisplay-Regular.ttf");
-const INTER_LIGHT: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Light.ttf");
-const INTER_MEDIUM: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Medium.ttf");
+    include_bytes!("../../fs/library/shared/fonts/Inter-Regular.ttf");
+const INTER_LIGHT: &[u8] = include_bytes!("../../fs/library/shared/fonts/Inter-Light.ttf");
+const INTER_MEDIUM: &[u8] = include_bytes!("../../fs/library/shared/fonts/Inter-Medium.ttf");
 const INTER_SEMIBOLD: &[u8] =
-    include_bytes!("../../fs/library/shared/fonts/InterDisplay-SemiBold.ttf");
-const INTER_BOLD: &[u8] = include_bytes!("../../fs/library/shared/fonts/InterDisplay-Bold.ttf");
+    include_bytes!("../../fs/library/shared/fonts/Inter-SemiBold.ttf");
+const INTER_BOLD: &[u8] = include_bytes!("../../fs/library/shared/fonts/Inter-Bold.ttf");
 
 struct Assets {
     base: PathBuf,
@@ -122,7 +122,7 @@ impl StatusBar {
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let now = chrono::Local::now();
-        let time_str = now.format("%H:%M (%Y-%m-%d)").to_string();
+        let time_str = now.format("%a %-d %B %H:%M").to_string();
         let active_app = self.active_window_state.get_app_name();
 
         div()
@@ -130,9 +130,9 @@ impl Render for StatusBar {
             .items_center()
             .justify_between()
             .w_full()
-            .h(px(30.0))
-            .px_2()
-            .font_family("Inter Display")
+            .h(px(40.0))
+            .px_4()
+            .font_family("Inter")
             .child(
                 div()
                     .flex()
@@ -144,14 +144,14 @@ impl Render for StatusBar {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(28.0))
-                            .h(px(28.0))
+                            .w(px(24.0))
+                            .h(px(24.0))
                             .cursor_pointer()
                             .rounded_sm()
                             .hover(|style| style.bg(rgba(0x2a2a2a80)))
                             .child(
                                 svg()
-                                    .size(px(16.0))
+                                    .size(px(14.0))
                                     .path("assets/logo.svg")
                                     .text_color(white()),
                             ),
@@ -162,7 +162,7 @@ impl Render for StatusBar {
                             .flex()
                             .items_center()
                             .px_2()
-                            .h(px(28.0))
+                            .h(px(24.0))
                             .text_color(white())
                             .text_sm()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -170,7 +170,7 @@ impl Render for StatusBar {
                     )
                     .child(
                         // Separator
-                        div().w(px(1.0)).h(px(16.0)).bg(rgba(0x40404080)),
+                        div().w(px(1.0)).h(px(14.0)).bg(rgba(0x40404080)),
                     )
                     .child(
                         // Menu items with active app name
@@ -195,6 +195,7 @@ impl Render for StatusBar {
                     .items_center()
                     .text_color(white())
                     .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(time_str),
             )
     }
@@ -202,8 +203,8 @@ impl Render for StatusBar {
 
 fn menu_item(label: String) -> impl IntoElement {
     div()
-        .px_3()
-        .h(px(24.0))
+        .px_2()
+        .h(px(22.0))
         .flex()
         .items_center()
         .text_color(rgba(0xccccccFF))
@@ -216,8 +217,8 @@ fn menu_item(label: String) -> impl IntoElement {
 
 fn menu_item_active(label: String) -> impl IntoElement {
     div()
-        .px_3()
-        .h(px(24.0))
+        .px_2()
+        .h(px(22.0))
         .flex()
         .items_center()
         .text_color(white())
@@ -303,6 +304,9 @@ fn main() {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
         })
         .run(|cx: &mut App| {
+            // Enable subpixel font rendering for better text quality
+            cx.set_text_rendering_mode(TextRenderingMode::Subpixel);
+
             // Register custom fonts
             cx.text_system()
                 .add_fonts(vec![
@@ -315,8 +319,10 @@ fn main() {
                 .expect("Failed to load fonts");
 
             // Set up theme with Inter font
+            // Note: Font smoothing is enabled by default on Linux (subpixel antialiasing)
+            // Optical sizing (opsz) would require font feature support in GPUI's text system
             let mut theme = Theme::default();
-            theme.font_family = "Inter".into();
+            theme.font_family = "Inter".into(); // Use Inter Display for better rendering
             theme.font_size = px(14.);
             cx.set_global(theme);
 
@@ -336,10 +342,10 @@ fn main() {
                         kind: WindowKind::LayerShell(LayerShellOptions {
                             namespace: "panel".to_string(),
                             anchor: Anchor::LEFT | Anchor::RIGHT | Anchor::TOP,
-                            margin: Some((px(4.), px(8.), px(0.), px(8.))), // Top, Right, Bottom, Left margins
+                            margin: Some((px(0.), px(0.), px(0.), px(0.))), // No margins for HiDPI
                             keyboard_interactivity: KeyboardInteractivity::None,
                             layer: Layer::Top,
-                            exclusive_zone: Some(36), // Reserve 36px (32px bar + 4px margin)
+                            exclusive_zone: Some(32), // Match bar height
                             ..Default::default()
                         }),
                         focus: false,
@@ -361,8 +367,8 @@ fn main() {
                 cx.open_window(
                     WindowOptions {
                         titlebar: None,
-                        window_bounds: Some(WindowBounds::Windowed(Bounds {
-                            origin: point(px(0.), px(0.)),  // Force top-left corner
+                        window_bounds: Some(WindowBounds::Maximized(Bounds {
+                            origin: point(px(0.), px(0.)),
                             size: Size::new(px(1920.), px(32.)),
                         })),
                         app_id: Some("mochi-bar".to_string()),
@@ -390,8 +396,8 @@ fn main() {
                 cx.open_window(
                     WindowOptions {
                         titlebar: None,
-                        window_bounds: Some(WindowBounds::Windowed(Bounds {
-                            origin: point(px(0.), px(0.)),  // Force top-left corner
+                        window_bounds: Some(WindowBounds::Maximized(Bounds {
+                            origin: point(px(0.), px(0.)),
                             size: Size::new(px(1920.), px(32.)),
                         })),
                         app_id: Some("mochi-bar".to_string()),
