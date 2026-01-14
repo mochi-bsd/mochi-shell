@@ -20,6 +20,7 @@ use wayland_client::{
     protocol::{wl_output, wl_shm, wl_surface, wl_pointer, wl_seat},
     Connection, QueueHandle, EventQueue,
 };
+use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
 use crate::canvas::Canvas;
 use crate::color::Color;
@@ -31,8 +32,6 @@ pub struct WindowConfig {
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,
     pub decorations: bool,
-    pub shadow: bool,
-    pub border: bool,
 }
 
 impl Default for WindowConfig {
@@ -44,8 +43,6 @@ impl Default for WindowConfig {
             min_width: Some(400),
             min_height: Some(300),
             decorations: false, // Use client-side decorations
-            shadow: true,
-            border: true,
         }
     }
 }
@@ -62,13 +59,10 @@ struct AppState {
     width: u32,
     height: u32,
     draw_fn: Option<Box<dyn FnMut(&mut Canvas)>>,
-    shadow: bool,
-    border: bool,
     pointer_location: Option<(f64, f64)>,
 }
 
 pub struct Window {
-    conn: Connection,
     event_queue: EventQueue<AppState>,
     state: AppState,
 }
@@ -78,26 +72,6 @@ impl Window {
         let conn = Connection::connect_to_env()?;
         let (globals, event_queue) = registry_queue_init::<AppState>(&conn)?;
         let qh = event_queue.handle();
-
-        // Detect compositor
-        let compositor_name = Self::detect_compositor();
-        let use_compositor_effects = matches!(
-            compositor_name.as_deref(),
-            Some("gnome") | Some("kde") | Some("mutter") | Some("kwin")
-        );
-
-        // Disable client-side effects if compositor handles them
-        let shadow = if use_compositor_effects {
-            false
-        } else {
-            config.shadow
-        };
-
-        let border = if use_compositor_effects {
-            false
-        } else {
-            config.border
-        };
 
         let state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -111,13 +85,10 @@ impl Window {
             width: config.width,
             height: config.height,
             draw_fn: None,
-            shadow,
-            border,
             pointer_location: None,
         };
 
         let mut window = Self {
-            conn,
             event_queue,
             state,
         };
@@ -125,12 +96,8 @@ impl Window {
         let qh = window.event_queue.handle();
         let surface = window.state.compositor_state.create_surface(&qh);
         
-        // Use server-side decorations on GNOME/KDE for compositor effects
-        let decorations = if use_compositor_effects || config.decorations {
-            WindowDecorations::ServerDefault
-        } else {
-            WindowDecorations::RequestServer
-        };
+        // Use client-side decorations for custom titlebar dragging
+        let decorations = WindowDecorations::RequestClient;
         
         let xdg_window = window.state.xdg_shell_state.create_window(
             surface,
@@ -161,44 +128,6 @@ impl Window {
             self.event_queue.blocking_dispatch(&mut self.state)?;
         }
     }
-
-    fn detect_compositor() -> Option<String> {
-        // Check XDG_CURRENT_DESKTOP environment variable
-        if let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") {
-            let desktop_lower = desktop.to_lowercase();
-            
-            if desktop_lower.contains("gnome") {
-                return Some("gnome".to_string());
-            } else if desktop_lower.contains("kde") || desktop_lower.contains("plasma") {
-                return Some("kde".to_string());
-            }
-        }
-
-        // Check WAYLAND_DISPLAY for compositor hints
-        if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
-            if display.contains("gnome") {
-                return Some("gnome".to_string());
-            }
-        }
-
-        // Check for specific compositor processes
-        if let Ok(session) = std::env::var("DESKTOP_SESSION") {
-            let session_lower = session.to_lowercase();
-            
-            if session_lower.contains("gnome") {
-                return Some("gnome".to_string());
-            } else if session_lower.contains("kde") || session_lower.contains("plasma") {
-                return Some("kde".to_string());
-            }
-        }
-
-        // Check for Mutter (GNOME's compositor)
-        if std::env::var("MUTTER_HINT_SCALE").is_ok() {
-            return Some("mutter".to_string());
-        }
-
-        None
-    }
 }
 
 impl AppState {
@@ -228,37 +157,6 @@ impl AppState {
 
         // Clear background
         canvas.clear(Color::BG_PRIMARY);
-
-        // Draw inset shadow effect
-        if self.shadow {
-            let shadow_size = 12;
-            
-            // Draw shadow layers from outside to inside
-            for i in 0..shadow_size {
-                let alpha = (40.0 * ((shadow_size - i) as f32 / shadow_size as f32).powi(2)) as u8;
-                
-                canvas.draw_rect(
-                    i,
-                    i,
-                    self.width as i32 - i * 2,
-                    self.height as i32 - i * 2,
-                    Color::rgba(0, 0, 0, alpha),
-                    1,
-                );
-            }
-        }
-
-        // Draw window border
-        if self.border {
-            canvas.draw_rect(
-                0,
-                0,
-                self.width as i32,
-                self.height as i32,
-                Color::rgba(70, 70, 80, 255),
-                1,
-            );
-        }
 
         // Call user draw function
         if let Some(ref mut draw_fn) = self.draw_fn {
@@ -356,14 +254,23 @@ impl WindowHandler for AppState {
         _serial: u32,
     ) {
         let (width, height) = configure.new_size;
+        let mut size_changed = false;
+        
         if let Some(w) = width {
-            self.width = w.get();
+            if self.width != w.get() {
+                self.width = w.get();
+                size_changed = true;
+            }
         }
         if let Some(h) = height {
-            self.height = h.get();
+            if self.height != h.get() {
+                self.height = h.get();
+                size_changed = true;
+            }
         }
 
-        if self.pool.is_none() {
+        // Recreate pool if size changed or pool doesn't exist
+        if self.pool.is_none() || size_changed {
             self.pool = Some(
                 SlotPool::new(
                     (self.width * self.height * 4) as usize,
@@ -409,10 +316,14 @@ impl SeatHandler for AppState {
     fn new_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-        _capability: smithay_client_toolkit::seat::Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: smithay_client_toolkit::seat::Capability,
     ) {
+        // Request pointer when the capability is available
+        if capability == smithay_client_toolkit::seat::Capability::Pointer {
+            self.seat_state.get_pointer(qh, &seat).ok();
+        }
     }
     fn remove_capability(
         &mut self,
@@ -430,28 +341,67 @@ impl PointerHandler for AppState {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        pointer: &wl_pointer::WlPointer,
+        _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        use PointerEventKind::*;
+        
         for event in events {
             match event.kind {
-                PointerEventKind::Enter { .. } => {}
-                PointerEventKind::Leave { .. } => {
-                    self.pointer_location = None;
-                }
-                PointerEventKind::Motion { .. } => {
+                Enter { .. } => {
                     self.pointer_location = Some(event.position);
                 }
-                PointerEventKind::Press { button, serial, .. } => {
-                    // Left click on titlebar to drag
+                Leave { .. } => {
+                    self.pointer_location = None;
+                }
+                Motion { .. } => {
+                    self.pointer_location = Some(event.position);
+                }
+                Press { button, serial, .. } => {
+                    // Left click
                     if button == 0x110 {
                         // BTN_LEFT
                         if let Some((x, y)) = self.pointer_location {
-                            // Check if click is in titlebar area (top 32px)
-                            if y < 32.0 {
-                                if let Some(window) = &self.window {
-                                    // Get the seat from the pointer
-                                    if let Some(seat) = self.seat_state.seats().next() {
+                            let window_width = self.width as f64;
+                            let window_height = self.height as f64;
+                            let edge_size = 10.0;
+                            let corner_size = 20.0;
+                            
+                            let at_left = x < edge_size;
+                            let at_right = x > window_width - edge_size;
+                            let at_top = y < edge_size;
+                            let at_bottom = y > window_height - edge_size;
+                            
+                            let at_left_corner = x < corner_size;
+                            let at_right_corner = x > window_width - corner_size;
+                            let at_top_corner = y < corner_size;
+                            let at_bottom_corner = y > window_height - corner_size;
+                            
+                            if let Some(window) = &self.window {
+                                if let Some(seat) = self.seat_state.seats().next() {
+                                    let resize_edge = if at_top_corner && at_left_corner {
+                                        Some(ResizeEdge::TopLeft)
+                                    } else if at_top_corner && at_right_corner {
+                                        Some(ResizeEdge::TopRight)
+                                    } else if at_bottom_corner && at_left_corner {
+                                        Some(ResizeEdge::BottomLeft)
+                                    } else if at_bottom_corner && at_right_corner {
+                                        Some(ResizeEdge::BottomRight)
+                                    } else if at_top {
+                                        Some(ResizeEdge::Top)
+                                    } else if at_bottom {
+                                        Some(ResizeEdge::Bottom)
+                                    } else if at_left {
+                                        Some(ResizeEdge::Left)
+                                    } else if at_right {
+                                        Some(ResizeEdge::Right)
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    if let Some(edge) = resize_edge {
+                                        window.resize(&seat, serial, edge);
+                                    } else if y < 32.0 {
                                         window.move_(&seat, serial);
                                     }
                                 }
@@ -459,8 +409,8 @@ impl PointerHandler for AppState {
                         }
                     }
                 }
-                PointerEventKind::Release { .. } => {}
-                PointerEventKind::Axis { .. } => {}
+                Release { .. } => {}
+                Axis { .. } => {}
             }
         }
     }
