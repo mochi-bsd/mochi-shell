@@ -1,0 +1,17 @@
+[package]
+name = "mochi-rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "mochi"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mochi-demo"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-client = "0.31"
+fontdue = "0.9"
