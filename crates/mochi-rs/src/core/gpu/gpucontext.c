@@ -10,12 +10,11 @@
     #define USE_EGL 1
     #define HAS_OPENGL 1
 #elif defined(__FreeBSD__)
-    // FreeBSD: Use standard OpenGL
-    #include <GL/gl.h>
+    // FreeBSD: Use GLES3 from /usr/local/include
+    #include <EGL/egl.h>
+    #include <GLES3/gl3.h>
+    #define USE_EGL 1
     #define HAS_OPENGL 1
-    typedef unsigned int GLuint;
-    typedef int GLint;
-    typedef unsigned int GLenum;
 #elif defined(_WIN32)
     #include <windows.h>
     #include <GL/gl.h>

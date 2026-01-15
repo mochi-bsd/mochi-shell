@@ -21,7 +21,9 @@ fn main() {
         }
         "freebsd" => {
             build.define("__FreeBSD__", None);
-            println!("cargo:rustc-link-lib=GL");
+            build.include("/usr/local/include");
+            println!("cargo:rustc-link-lib=EGL");
+            println!("cargo:rustc-link-lib=GLESv2");
             println!("cargo:rustc-link-search=native=/usr/local/lib");
         }
         "windows" => {

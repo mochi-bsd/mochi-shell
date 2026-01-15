@@ -3,11 +3,8 @@
 #include <math.h>
 
 // Platform-specific includes
-#if defined(__linux__)
+#if defined(__linux__) || defined(__FreeBSD__)
     #include <GLES3/gl3.h>
-    #define HAS_OPENGL 1
-#elif defined(__FreeBSD__)
-    #include <GL/gl.h>
     #define HAS_OPENGL 1
 #elif defined(_WIN32)
     #include <GL/gl.h>
