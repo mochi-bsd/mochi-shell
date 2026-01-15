@@ -1,6 +1,6 @@
+use crate::core::{canvas::Canvas, color::Color};
 use fontdue::{Font, FontSettings};
 use std::collections::HashMap;
-use crate::{canvas::Canvas, color::Color};
 
 pub struct TextRenderer {
     fonts: HashMap<String, Font>,
@@ -13,7 +13,11 @@ impl TextRenderer {
         }
     }
 
-    pub fn load_font(&mut self, name: &str, font_data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_font(
+        &mut self,
+        name: &str,
+        font_data: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let font = Font::from_bytes(font_data, FontSettings::default())?;
         self.fonts.insert(name.to_string(), font);
         Ok(())
@@ -39,11 +43,11 @@ impl TextRenderer {
 
         let mut cursor_x = x;
         let baseline_offset = self.calculate_baseline(text, font_size, font);
-        
+
         for ch in text.chars() {
             let (metrics, bitmap) = font.rasterize(ch, font_size);
             let advance = metrics.advance_width as i32;
-            
+
             if metrics.width > 0 && metrics.height > 0 {
                 let char_x = cursor_x + metrics.xmin;
                 let char_y = y + baseline_offset - metrics.height as i32 - metrics.ymin;
@@ -55,7 +59,7 @@ impl TextRenderer {
 
                         let bitmap_idx = py * metrics.width + px;
                         let alpha = bitmap[bitmap_idx];
-                        
+
                         if alpha > 0 {
                             let pixel_color = Color::rgba(color.r, color.g, color.b, alpha);
                             canvas.blend_pixel(screen_x, screen_y, pixel_color);
@@ -63,20 +67,20 @@ impl TextRenderer {
                     }
                 }
             }
-            
+
             cursor_x += advance;
         }
     }
 
     fn calculate_baseline(&self, text: &str, font_size: f32, font: &Font) -> i32 {
         let mut max_ascent = 0;
-        
+
         for ch in text.chars() {
             let (metrics, _) = font.rasterize(ch, font_size);
             let ascent = metrics.height as i32 + metrics.ymin;
             max_ascent = max_ascent.max(ascent);
         }
-        
+
         max_ascent
     }
 
@@ -88,13 +92,13 @@ impl TextRenderer {
 
         let mut width = 0;
         let mut max_height = 0;
-        
+
         for ch in text.chars() {
             let (metrics, _) = font.rasterize(ch, font_size);
             width += metrics.advance_width as i32;
             max_height = max_height.max(metrics.height as i32);
         }
-        
+
         (width, max_height)
     }
 }
