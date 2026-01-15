@@ -19,6 +19,11 @@ fn main() {
             println!("cargo:rustc-link-lib=EGL");
             println!("cargo:rustc-link-lib=GLESv2");
         }
+        "freebsd" => {
+            build.define("__FreeBSD__", None);
+            println!("cargo:rustc-link-lib=GL");
+            println!("cargo:rustc-link-search=native=/usr/local/lib");
+        }
         "windows" => {
             build.define("_WIN32", None);
             println!("cargo:rustc-link-lib=opengl32");
@@ -28,7 +33,10 @@ fn main() {
             build.define("__APPLE__", None);
             println!("cargo:rustc-link-lib=framework=OpenGL");
         }
-        _ => {}
+        _ => {
+            // Unknown platform - compile without GPU support
+            println!("cargo:warning=Unknown platform: {}. Building without GPU support.", target_os);
+        }
     }
     
     build.compile("gpucontext");

@@ -3,8 +3,20 @@
 #include <math.h>
 
 // Platform-specific includes
-#ifdef __linux__
+#if defined(__linux__)
     #include <GLES3/gl3.h>
+    #define HAS_OPENGL 1
+#elif defined(__FreeBSD__)
+    #include <GL/gl.h>
+    #define HAS_OPENGL 1
+#elif defined(_WIN32)
+    #include <GL/gl.h>
+    #define HAS_OPENGL 1
+#elif defined(__APPLE__)
+    #include <OpenGL/gl3.h>
+    #define HAS_OPENGL 1
+#else
+    #define HAS_OPENGL 0
 #endif
 
 void gpu_blur_pass(
@@ -47,7 +59,7 @@ void gpu_composite_pass(
 ) {
     if (!ctx) return;
     
-    #ifdef __linux__
+    #if HAS_OPENGL
     // Set OpenGL blend mode
     glEnable(GL_BLEND);
     switch (blend_mode) {
@@ -64,6 +76,8 @@ void gpu_composite_pass(
             glBlendFunc(GL_SRC_ALPHA, GL_ONE);
             break;
     }
+    #else
+    (void)blend_mode; // Suppress unused parameter warning
     #endif
 }
 

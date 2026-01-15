@@ -8,13 +8,29 @@
     #include <EGL/egl.h>
     #include <GLES3/gl3.h>
     #define USE_EGL 1
+    #define HAS_OPENGL 1
+#elif defined(__FreeBSD__)
+    // FreeBSD: Use standard OpenGL
+    #include <GL/gl.h>
+    #define HAS_OPENGL 1
+    typedef unsigned int GLuint;
+    typedef int GLint;
+    typedef unsigned int GLenum;
 #elif defined(_WIN32)
     #include <windows.h>
     #include <GL/gl.h>
     #define USE_WGL 1
+    #define HAS_OPENGL 1
 #elif defined(__APPLE__)
     #include <OpenGL/gl3.h>
     #define USE_CGL 1
+    #define HAS_OPENGL 1
+#else
+    // No OpenGL support - define types for compilation
+    typedef unsigned int GLuint;
+    typedef int GLint;
+    typedef unsigned int GLenum;
+    #define HAS_OPENGL 0
 #endif
 
 // Internal GPU context structure
@@ -106,6 +122,7 @@ static bool try_init_opengles(GpuContext* ctx) {
     }
     
     // Get device info
+    #ifdef HAS_OPENGL
     const char* vendor = (const char*)glGetString(GL_VENDOR);
     const char* renderer = (const char*)glGetString(GL_RENDERER);
     const char* version = (const char*)glGetString(GL_VERSION);
@@ -113,19 +130,33 @@ static bool try_init_opengles(GpuContext* ctx) {
     if (vendor) strncpy(ctx->vendor_name, vendor, sizeof(ctx->vendor_name) - 1);
     if (renderer) strncpy(ctx->device_name, renderer, sizeof(ctx->device_name) - 1);
     if (version) strncpy(ctx->driver_version, version, sizeof(ctx->driver_version) - 1);
+    #endif
     
     ctx->backend_type = GPU_BACKEND_OPENGLES;
     return true;
     #else
+    (void)ctx; // Suppress unused parameter warning
     return false;
     #endif
 }
 
-// Helper: Try to initialize OpenGL
+// Helper: Try to initialize OpenGL (for FreeBSD and other platforms without EGL)
 static bool try_init_opengl(GpuContext* ctx) {
-    // TODO: Implement OpenGL initialization for desktop
-    // For now, fall back to OpenGL ES
+    #if defined(__FreeBSD__) || defined(__APPLE__)
+    // On FreeBSD/macOS, we can't easily create an OpenGL context without a window
+    // For now, just report that OpenGL is available but not initialized
+    // In a real implementation, this would use platform-specific context creation
+    
+    strncpy(ctx->vendor_name, "System", sizeof(ctx->vendor_name) - 1);
+    strncpy(ctx->device_name, "OpenGL (not initialized)", sizeof(ctx->device_name) - 1);
+    strncpy(ctx->driver_version, "N/A", sizeof(ctx->driver_version) - 1);
+    
+    ctx->backend_type = GPU_BACKEND_OPENGL;
+    return false; // Return false since we can't actually use it yet
+    #else
+    (void)ctx; // Suppress unused parameter warning
     return false;
+    #endif
 }
 
 // Helper: Try to initialize Vulkan
