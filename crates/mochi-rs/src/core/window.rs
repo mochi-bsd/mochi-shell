@@ -25,9 +25,17 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
-use crate::core::canvas::{Canvas, RenderBackend};
+use crate::core::canvas::Canvas;
 use crate::core::color::Color;
-use crate::core::gpu::{GpuBackend, GpuBackendType, SoftwareBackend, NativeGpuContext};
+
+// Debug logging macro
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("MOCHI_DEBUG").is_ok() {
+            eprintln!("[MOCHI DEBUG] {}", format!($($arg)*));
+        }
+    };
+}
 
 pub struct WindowConfig {
     pub title: String,
@@ -36,7 +44,6 @@ pub struct WindowConfig {
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,
     pub decorations: bool,
-    pub prefer_gpu: bool, // Try to use GPU rendering if available
 }
 
 impl Default for WindowConfig {
@@ -48,7 +55,6 @@ impl Default for WindowConfig {
             min_width: Some(400),
             min_height: Some(300),
             decorations: false, // Use client-side decorations
-            prefer_gpu: true,   // Try GPU rendering by default
         }
     }
 }
@@ -66,11 +72,9 @@ struct AppState {
     height: u32,
     draw_fn: Option<Box<dyn FnMut(&mut Canvas)>>,
     pointer_location: Option<(f64, f64)>,
-    gpu_context: Option<NativeGpuContext>,
-    gpu_backend_name: String,
-    gpu_device_name: String,
-    prefer_gpu: bool,
-    gpu_initialized: bool,
+    is_resizing: bool,
+    last_resize_time: std::time::Instant,
+    resize_debounce_ms: u64,
 }
 
 pub struct Window {
@@ -80,10 +84,17 @@ pub struct Window {
 
 impl Window {
     pub fn new(config: WindowConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        debug_log!("Window::new() - Creating window: {}x{}", config.width, config.height);
+        
         let conn = Connection::connect_to_env()?;
+        debug_log!("Connected to Wayland display");
+        
         let (globals, event_queue) = registry_queue_init::<AppState>(&conn)?;
+        debug_log!("Registry initialized");
+        
         let qh = event_queue.handle();
 
+        debug_log!("Binding Wayland protocols...");
         let state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -97,26 +108,29 @@ impl Window {
             height: config.height,
             draw_fn: None,
             pointer_location: None,
-            gpu_context: None,
-            gpu_backend_name: "CPU".to_string(),
-            gpu_device_name: "Software Renderer".to_string(),
-            prefer_gpu: config.prefer_gpu,
-            gpu_initialized: false,
+            is_resizing: false,
+            last_resize_time: std::time::Instant::now(),
+            resize_debounce_ms: 150, // Wait 150ms after resize before full redraw
         };
+        debug_log!("Wayland protocols bound successfully");
 
         let mut window = Self { event_queue, state };
 
         let qh = window.event_queue.handle();
+        debug_log!("Creating surface...");
         let surface = window.state.compositor_state.create_surface(&qh);
 
         // Use client-side decorations for custom titlebar dragging
         let decorations = WindowDecorations::RequestClient;
 
+        debug_log!("Creating XDG window...");
         let xdg_window = window
             .state
             .xdg_shell_state
             .create_window(surface, decorations, &qh);
 
+        debug_log!("Setting window properties: title='{}', min_size={:?}", 
+                   config.title, (config.min_width, config.min_height));
         xdg_window.set_title(&config.title);
         if let (Some(min_w), Some(min_h)) = (config.min_width, config.min_height) {
             xdg_window.set_min_size(Some((min_w, min_h)));
@@ -124,6 +138,7 @@ impl Window {
         xdg_window.commit();
 
         window.state.window = Some(xdg_window);
+        debug_log!("Window created successfully");
 
         Ok(window)
     }
@@ -136,65 +151,61 @@ impl Window {
     }
 
     pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        debug_log!("Entering main event loop");
+        let mut frame_count = 0u64;
+        let start_time = std::time::Instant::now();
+        
         loop {
             self.event_queue.blocking_dispatch(&mut self.state)?;
+            
+            // Check if we need to trigger a delayed full redraw after resize
+            if self.state.is_resizing {
+                let elapsed = self.state.last_resize_time.elapsed();
+                if elapsed.as_millis() >= self.state.resize_debounce_ms as u128 {
+                    debug_log!("Triggering delayed full redraw after resize");
+                    self.state.is_resizing = false;
+                    if let Some(window) = &self.state.window {
+                        let qh = self.event_queue.handle();
+                        self.state.draw(&qh, false);
+                    }
+                }
+            }
+            
+            frame_count += 1;
+            if frame_count % 60 == 0 {
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let fps = frame_count as f64 / elapsed;
+                debug_log!("Frame {}: {:.1} FPS, Size: {}x{}", 
+                          frame_count, fps, self.state.width, self.state.height);
+            }
         }
     }
 }
 
 impl AppState {
-    /// Try to initialize GPU backend (Vulkan > OpenGL > GLES > CPU fallback)
-    fn try_init_gpu(&mut self) -> bool {
-        if !self.prefer_gpu || self.gpu_initialized {
-            return false;
-        }
-
-        self.gpu_initialized = true; // Mark as initialized to prevent double init
-
-        // Try to create native GPU context (C FFI)
-        if let Some(ctx) = NativeGpuContext::new(self.width, self.height) {
-            let info = ctx.get_device_info();
-            let backend_name = match ctx.get_backend() {
-                crate::core::gpu::ffi::GpuBackendType::Vulkan => "Vulkan",
-                crate::core::gpu::ffi::GpuBackendType::OpenGL => "OpenGL",
-                crate::core::gpu::ffi::GpuBackendType::OpenGLES => "OpenGL ES",
-                _ => "Unknown",
-            };
-            
-            println!("GPU: Initialized {} backend", backend_name);
-            println!("GPU: Device: {}", info.device_name_str());
-            println!("GPU: Vendor: {}", info.vendor_name_str());
-            println!("GPU: Driver: {}", info.driver_version_str());
-            
-            // Store GPU info for titlebar display
-            self.gpu_backend_name = backend_name.to_string();
-            self.gpu_device_name = info.device_name_str();
-            
-            self.gpu_context = Some(ctx);
-            return true;
-        }
-        
-        println!("GPU: No hardware backend available, using CPU fallback");
-        false
-    }
-
-    fn draw(&mut self, _qh: &QueueHandle<Self>) {
-        // Try to initialize GPU backend on first draw (before any other borrows)
-        if self.gpu_context.is_none() && self.prefer_gpu {
-            self.try_init_gpu();
-        }
+    fn draw(&mut self, _qh: &QueueHandle<Self>, skip_expensive: bool) {
+        let draw_start = std::time::Instant::now();
 
         let window = match &self.window {
             Some(w) => w,
-            None => return,
+            None => {
+                debug_log!("draw() called but window is None");
+                return;
+            }
         };
 
         let pool = match &mut self.pool {
             Some(p) => p,
-            None => return,
+            None => {
+                debug_log!("draw() called but pool is None");
+                return;
+            }
         };
 
         let stride = self.width as i32 * 4;
+        let buffer_size = (self.width * self.height * 4) as usize;
+        debug_log!("Creating buffer: {}x{} ({}KB)", 
+                  self.width, self.height, buffer_size / 1024);
 
         let (buffer, canvas_buffer) = pool
             .create_buffer(
@@ -205,17 +216,31 @@ impl AppState {
             )
             .expect("Failed to create buffer");
 
-        let mut canvas = Canvas::new(canvas_buffer, self.width, self.height);
+        if skip_expensive {
+            debug_log!("Fast draw (skipping expensive rendering)");
+            // During resize, just fill with solid background color for performance
+            for pixel in canvas_buffer.chunks_exact_mut(4) {
+                pixel[0] = 40;  // B
+                pixel[1] = 40;  // G
+                pixel[2] = 40;  // R
+                pixel[3] = 255; // A
+            }
+        } else {
+            debug_log!("Full draw with effects");
+            let canvas_start = std::time::Instant::now();
+            
+            let mut canvas = Canvas::new(canvas_buffer, self.width, self.height);
 
-        // Set GPU info in canvas for titlebar display
-        canvas.set_gpu_info(self.gpu_backend_name.clone(), self.gpu_device_name.clone());
+            // Clear background
+            canvas.clear(Color::BG_PRIMARY);
 
-        // Clear background
-        canvas.clear(Color::BG_PRIMARY);
-
-        // Call user draw function
-        if let Some(ref mut draw_fn) = self.draw_fn {
-            draw_fn(&mut canvas);
+            // Call user draw function
+            if let Some(ref mut draw_fn) = self.draw_fn {
+                draw_fn(&mut canvas);
+            }
+            
+            let canvas_elapsed = canvas_start.elapsed();
+            debug_log!("Canvas rendering took: {:.2}ms", canvas_elapsed.as_secs_f64() * 1000.0);
         }
 
         window.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
@@ -223,6 +248,9 @@ impl AppState {
             .wl_surface()
             .damage_buffer(0, 0, self.width as i32, self.height as i32);
         window.wl_surface().commit();
+        
+        let draw_elapsed = draw_start.elapsed();
+        debug_log!("Total draw() took: {:.2}ms", draw_elapsed.as_secs_f64() * 1000.0);
     }
 }
 
@@ -250,9 +278,30 @@ impl CompositorHandler for AppState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _time: u32,
+        time: u32,
     ) {
-        self.draw(qh);
+        debug_log!("frame() callback: time={}, was_resizing={}", time, self.is_resizing);
+        
+        // Check if enough time has passed since last resize
+        if self.is_resizing {
+            let elapsed = self.last_resize_time.elapsed();
+            if elapsed.as_millis() < self.resize_debounce_ms as u128 {
+                debug_log!("Resize debounce: waiting {}ms more", 
+                          self.resize_debounce_ms as u128 - elapsed.as_millis());
+                // Still resizing, request another frame callback
+                if let Some(window) = &self.window {
+                    window.wl_surface().frame(qh, window.wl_surface().clone());
+                }
+                return;
+            }
+            
+            // Resize settled, do full redraw
+            debug_log!("Resize settled - doing full redraw");
+            self.is_resizing = false;
+        }
+        
+        // Full redraw
+        self.draw(qh, false);
     }
 
     fn surface_enter(
@@ -306,6 +355,7 @@ impl OutputHandler for AppState {
 
 impl WindowHandler for AppState {
     fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &XdgWindow) {
+        debug_log!("Window close requested");
         std::process::exit(0);
     }
 
@@ -315,19 +365,23 @@ impl WindowHandler for AppState {
         qh: &QueueHandle<Self>,
         window: &XdgWindow,
         configure: WindowConfigure,
-        _serial: u32,
+        serial: u32,
     ) {
+        debug_log!("configure() called: serial={}", serial);
+        
         let (width, height) = configure.new_size;
         let mut size_changed = false;
 
         if let Some(w) = width {
             if self.width != w.get() {
+                debug_log!("Width changed: {} -> {}", self.width, w.get());
                 self.width = w.get();
                 size_changed = true;
             }
         }
         if let Some(h) = height {
             if self.height != h.get() {
+                debug_log!("Height changed: {} -> {}", self.height, h.get());
                 self.height = h.get();
                 size_changed = true;
             }
@@ -335,14 +389,27 @@ impl WindowHandler for AppState {
 
         // Recreate pool if size changed or pool doesn't exist
         if self.pool.is_none() || size_changed {
+            let pool_size = (self.width * self.height * 4) as usize;
+            debug_log!("Creating new pool: {} bytes", pool_size);
             self.pool = Some(
-                SlotPool::new((self.width * self.height * 4) as usize, &self.shm_state)
+                SlotPool::new(pool_size, &self.shm_state)
                     .expect("Failed to create pool"),
             );
         }
 
-        self.draw(qh);
-        window.wl_surface().commit();
+        // During resize, use fast draw (skip expensive rendering)
+        if size_changed {
+            debug_log!("Size changed - using fast draw");
+            self.is_resizing = true;
+            self.last_resize_time = std::time::Instant::now();
+            self.draw(qh, true); // Skip expensive rendering
+            
+            // Don't request frame callback here - let the timer handle it
+        } else {
+            debug_log!("Initial configure - using full draw");
+            // Initial configure or state change - do full draw
+            self.draw(qh, false);
+        }
     }
 }
 

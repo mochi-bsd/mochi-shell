@@ -1,5 +1,4 @@
 use crate::core::{canvas::Canvas, color::Color, text::TextRenderer};
-use crate::core::gpu::{ShaderEffect, FragmentShader};
 
 #[derive(Debug, Clone)]
 pub struct Rect {
@@ -29,7 +28,7 @@ pub struct Container {
     pub rect: Rect,
     pub background: Color,
     pub children: Vec<Box<dyn Element>>,
-    pub shader_effect: Option<ShaderEffect>,
+    // shader_effect removed - using software rendering only
     pub corner_radius: Option<f32>,
 }
 
@@ -39,7 +38,7 @@ impl Container {
             rect,
             background: Color::BG_PRIMARY,
             children: Vec::new(),
-            shader_effect: None,
+            // shader_effect: None,
             corner_radius: None,
         }
     }
@@ -54,23 +53,19 @@ impl Container {
         self
     }
 
-    pub fn effect(mut self, effect: ShaderEffect) -> Self {
-        self.shader_effect = Some(effect);
-        self
-    }
 
     pub fn blur(mut self, radius: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::blur(radius));
+        // self.shader_effect = Some(ShaderEffect::blur(radius));
         self
     }
 
     pub fn glow(mut self, intensity: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::glow(intensity));
+        // self.shader_effect = Some(ShaderEffect::glow(intensity));
         self
     }
 
     pub fn brightness(mut self, value: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::brightness(value));
+        // self.shader_effect = Some(ShaderEffect::brightness(value));
         self
     }
 
@@ -83,15 +78,7 @@ impl Container {
 impl Element for Container {
     fn render(&self, canvas: &mut Canvas, text_renderer: &TextRenderer) {
         if let Some(radius) = self.corner_radius {
-            if let Some(ref effect) = self.shader_effect {
-                canvas.fill_rect_with_effect(
-                    self.rect.x,
-                    self.rect.y,
-                    self.rect.width,
-                    self.rect.height,
-                    self.background,
-                    effect,
-                );
+            if false { // shader effects disabled
             } else {
                 canvas.fill_rounded_rect(
                     self.rect.x,
@@ -102,15 +89,7 @@ impl Element for Container {
                     self.background,
                 );
             }
-        } else if let Some(ref effect) = self.shader_effect {
-            canvas.fill_rect_with_effect(
-                self.rect.x,
-                self.rect.y,
-                self.rect.width,
-                self.rect.height,
-                self.background,
-                effect,
-            );
+        } else if false { // shader effects disabled
         } else {
             canvas.fill_rect(
                 self.rect.x,
@@ -236,6 +215,172 @@ impl Element for VStack {
     }
 }
 
+// Div - A flexible container element (like HTML div)
+pub struct Div {
+    pub rect: Rect,
+    pub background: Color,
+    pub border_color: Option<Color>,
+    pub border_width: i32,
+    pub shadow: bool,
+    pub shadow_blur: i32,
+    pub corner_radius: f32,
+    pub gradient: Option<(Color, f32)>,
+    pub children: Vec<Box<dyn Element>>,
+}
+
+impl Div {
+    pub fn new(rect: Rect) -> Self {
+        Self {
+            rect,
+            background: Color::TRANSPARENT,
+            border_color: None,
+            border_width: 0,
+            shadow: false,
+            shadow_blur: 0,
+            corner_radius: 0.0,
+            gradient: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn background(mut self, color: Color) -> Self {
+        self.background = color;
+        self
+    }
+
+    pub fn gradient(mut self, end_color: Color, angle: f32) -> Self {
+        self.gradient = Some((end_color, angle));
+        self
+    }
+
+    pub fn rounded(mut self, radius: f32) -> Self {
+        self.corner_radius = radius;
+        self
+    }
+
+    pub fn border(mut self, color: Color, width: i32) -> Self {
+        self.border_color = Some(color);
+        self.border_width = width;
+        self
+    }
+
+    pub fn shadow(mut self, enabled: bool) -> Self {
+        self.shadow = enabled;
+        self
+    }
+
+    pub fn shadow_blur(mut self, blur: i32) -> Self {
+        self.shadow_blur = blur;
+        self
+    }
+
+    pub fn frame(mut self, x: i32, y: i32, width: i32, height: i32) -> Self {
+        self.rect = Rect::new(x, y, width, height);
+        self
+    }
+
+    pub fn child(mut self, element: impl Element + 'static) -> Self {
+        self.children.push(Box::new(element));
+        self
+    }
+}
+
+impl Element for Div {
+    fn render(&self, canvas: &mut Canvas, text_renderer: &TextRenderer) {
+        // Draw shadow first (behind the div) with proper blur
+        if self.shadow && self.shadow_blur > 0 {
+            if self.corner_radius > 0.0 {
+                canvas.draw_rounded_shadow(
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.width,
+                    self.rect.height,
+                    self.corner_radius,
+                    self.shadow_blur,
+                    Color::rgba(0, 0, 0, 80),
+                );
+            } else {
+                canvas.draw_shadow(
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.width,
+                    self.rect.height,
+                    self.shadow_blur,
+                    Color::rgba(0, 0, 0, 80),
+                );
+            }
+        }
+
+        // Draw div background with effects
+        if let Some((end_color, angle)) = self.gradient {
+            if self.corner_radius > 0.0 {
+                // For gradients with rounded corners, draw gradient then mask
+                canvas.fill_gradient_rect(
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.width,
+                    self.rect.height,
+                    self.background,
+                    end_color,
+                    angle,
+                );
+                // Redraw rounded rect to clip corners
+                canvas.fill_rounded_rect(
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.width,
+                    self.rect.height,
+                    self.corner_radius,
+                    Color::TRANSPARENT,
+                );
+            } else {
+                canvas.fill_gradient_rect(
+                    self.rect.x,
+                    self.rect.y,
+                    self.rect.width,
+                    self.rect.height,
+                    self.background,
+                    end_color,
+                    angle,
+                );
+            }
+        } else if self.background.a > 0 {
+            // Only draw background if not transparent
+            canvas.fill_rounded_rect(
+                self.rect.x,
+                self.rect.y,
+                self.rect.width,
+                self.rect.height,
+                self.corner_radius,
+                self.background,
+            );
+        }
+
+        // Draw border if enabled
+        if let Some(border_color) = self.border_color {
+            canvas.draw_rect(
+                self.rect.x,
+                self.rect.y,
+                self.rect.width,
+                self.rect.height,
+                border_color,
+                self.border_width,
+            );
+        }
+
+        // Render children
+        for child in &self.children {
+            child.render(canvas, text_renderer);
+        }
+    }
+
+    fn bounds(&self) -> Rect {
+        self.rect.clone()
+    }
+}
+
+// Card - Deprecated, use Div instead
+// Kept for backward compatibility
 pub struct Card {
     pub rect: Rect,
     pub background: Color,
@@ -244,7 +389,7 @@ pub struct Card {
     pub shadow: bool,
     pub shadow_blur: i32,
     pub corner_radius: f32,
-    pub shader_effect: Option<ShaderEffect>,
+    // shader_effect removed - using software rendering only
     pub gradient: Option<(Color, f32)>,
     pub children: Vec<Box<dyn Element>>,
 }
@@ -259,7 +404,7 @@ impl Card {
             shadow: true,
             shadow_blur: 8,
             corner_radius: 12.0,
-            shader_effect: None,
+            // shader_effect: None,
             gradient: None,
             children: Vec::new(),
         }
@@ -301,33 +446,29 @@ impl Card {
         self
     }
 
-    pub fn effect(mut self, effect: ShaderEffect) -> Self {
-        self.shader_effect = Some(effect);
-        self
-    }
 
     pub fn blur(mut self, radius: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::blur(radius));
+        // self.shader_effect = Some(ShaderEffect::blur(radius));
         self
     }
 
     pub fn glow(mut self, intensity: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::glow(intensity));
+        // self.shader_effect = Some(ShaderEffect::glow(intensity));
         self
     }
 
     pub fn brightness(mut self, value: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::brightness(value));
+        // self.shader_effect = Some(ShaderEffect::brightness(value));
         self
     }
 
     pub fn contrast(mut self, value: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::contrast(value));
+        // self.shader_effect = Some(ShaderEffect::contrast(value));
         self
     }
 
     pub fn desaturate(mut self, amount: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::desaturate(amount));
+        // self.shader_effect = Some(ShaderEffect::desaturate(amount));
         self
     }
 
@@ -439,20 +580,12 @@ impl Element for Card {
                     angle,
                 );
             }
-        } else if let Some(ref effect) = self.shader_effect {
+        } else if false { // shader effects disabled
             if self.corner_radius > 0.0 {
                 // For effects with rounded corners:
                 // 1. Draw the effect (may go outside bounds)
                 // 2. Draw rounded rect on top to clip
                 // 3. Apply mask to clean up corners
-                canvas.fill_rect_with_effect(
-                    self.rect.x,
-                    self.rect.y,
-                    self.rect.width,
-                    self.rect.height,
-                    self.background,
-                    effect,
-                );
                 // Redraw the rounded rect to clip the effect
                 canvas.fill_rounded_rect(
                     self.rect.x,
@@ -463,14 +596,6 @@ impl Element for Card {
                     self.background,
                 );
             } else {
-                canvas.fill_rect_with_effect(
-                    self.rect.x,
-                    self.rect.y,
-                    self.rect.width,
-                    self.rect.height,
-                    self.background,
-                    effect,
-                );
             }
         } else {
             canvas.fill_rounded_rect(
@@ -511,6 +636,11 @@ pub fn container(x: i32, y: i32, width: i32, height: i32) -> Container {
     Container::new(Rect::new(x, y, width, height))
 }
 
+// Constructor functions
+pub fn div(x: i32, y: i32, width: i32, height: i32) -> Div {
+    Div::new(Rect::new(x, y, width, height))
+}
+
 pub fn card(x: i32, y: i32, width: i32, height: i32) -> Card {
     Card::new(Rect::new(x, y, width, height))
 }
@@ -534,7 +664,7 @@ pub struct Titlebar {
     pub title: String,
     pub background: Color,
     pub show_controls: bool,
-    pub shader_effect: Option<ShaderEffect>,
+    // shader_effect removed - using software rendering only
     pub gradient: Option<(Color, f32)>,
 }
 
@@ -545,7 +675,7 @@ impl Titlebar {
             title: title.into(),
             background: Color::BG_TERTIARY,
             show_controls: true,
-            shader_effect: None,
+            // shader_effect: None,
             gradient: None,
         }
     }
@@ -560,13 +690,9 @@ impl Titlebar {
         self
     }
 
-    pub fn effect(mut self, effect: ShaderEffect) -> Self {
-        self.shader_effect = Some(effect);
-        self
-    }
 
     pub fn blur(mut self, radius: f32) -> Self {
-        self.shader_effect = Some(ShaderEffect::blur(radius));
+        // self.shader_effect = Some(ShaderEffect::blur(radius));
         self
     }
 
@@ -588,7 +714,7 @@ impl Titlebar {
         };
 
         // Center the 16x16 icon in the button area
-        let icon_size = 18;
+        let icon_size = 10;
         let icon_x = x + (32 - icon_size) / 2;
         let icon_y = y + (self.rect.height - icon_size) / 2;
 
@@ -611,7 +737,7 @@ impl Titlebar {
         };
 
         // Center the 16x16 icon in the button area
-        let icon_size = 18;
+        let icon_size = 10;
         let icon_x = x + (32 - icon_size) / 2;
         let icon_y = y + (self.rect.height - icon_size) / 2;
 
@@ -634,7 +760,7 @@ impl Titlebar {
         };
 
         // Center the 16x16 icon in the button area
-        let icon_size = 18;
+        let icon_size = 10;
         let icon_x = x + (32 - icon_size) / 2;
         let icon_y = y + (self.rect.height - icon_size) / 2;
 
@@ -749,15 +875,7 @@ impl Element for Titlebar {
                 end_color,
                 angle,
             );
-        } else if let Some(ref effect) = self.shader_effect {
-            canvas.fill_rect_with_effect(
-                self.rect.x,
-                self.rect.y,
-                self.rect.width,
-                self.rect.height,
-                self.background,
-                effect,
-            );
+        } else if false { // shader effects disabled
         } else {
             canvas.fill_rect(
                 self.rect.x,

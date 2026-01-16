@@ -19,6 +19,11 @@ impl Color {
         (self.r, self.g, self.b)
     }
 
+    // Basic colors
+    pub const WHITE: Color = Color::rgb(255, 255, 255);
+    pub const BLACK: Color = Color::rgb(0, 0, 0);
+    pub const TRANSPARENT: Color = Color::rgba(0, 0, 0, 0);
+
     // Dark mode color palette
     pub const BG_PRIMARY: Color = Color::rgb(40, 40, 40);
     pub const BG_SECONDARY: Color = Color::rgb(50, 50, 50);

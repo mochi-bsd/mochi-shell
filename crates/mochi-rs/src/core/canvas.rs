@@ -1,19 +1,21 @@
 use crate::core::color::Color;
-use crate::core::gpu::{ShaderEffect, FragmentShader, ShaderContext, GpuBackend, GpuBackendType};
-use glam::Vec2;
 
-pub enum RenderBackend {
-    CPU,
-    GPU(Box<dyn GpuBackend>),
+// Debug logging macro
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if std::env::var("MOCHI_DEBUG").is_ok() {
+            eprintln!("[CANVAS] {}", format!($($arg)*));
+        }
+    };
 }
+
+use glam::Vec2;
 
 pub struct Canvas<'a> {
     buffer: &'a mut [u8],
     width: u32,
     height: u32,
-    backend: Option<RenderBackend>,
-    gpu_backend_name: String,
-    gpu_device_name: String,
+    renderer_name: String,
 }
 
 impl<'a> Canvas<'a> {
@@ -22,28 +24,8 @@ impl<'a> Canvas<'a> {
             buffer,
             width,
             height,
-            backend: None,
-            gpu_backend_name: "CPU".to_string(),
-            gpu_device_name: "Software Renderer".to_string(),
+            renderer_name: "LLVMpipe Software Renderer".to_string(),
         }
-    }
-
-    /// Set GPU info for display purposes
-    pub fn set_gpu_info(&mut self, backend_name: String, device_name: String) {
-        self.gpu_backend_name = backend_name;
-        self.gpu_device_name = device_name;
-    }
-
-    /// Try to initialize GPU backend (Vulkan > OpenGL > GLES)
-    pub fn try_init_gpu(&mut self) -> bool {
-        // TODO: Implement GPU backend initialization
-        // For now, we'll use CPU rendering
-        // In the future:
-        // 1. Try Vulkan first
-        // 2. Fall back to OpenGL
-        // 3. Fall back to OpenGL ES
-        // 4. Fall back to CPU
-        false
     }
 
     pub fn width(&self) -> u32 {
@@ -54,78 +36,24 @@ impl<'a> Canvas<'a> {
         self.height
     }
 
-    pub fn has_gpu(&self) -> bool {
-        matches!(self.backend, Some(RenderBackend::GPU(_)))
+    pub fn set_gpu_info(&mut self, _backend: String, device: String) {
+        self.renderer_name = device;
     }
 
-    /// Get the current renderer backend type
-    pub fn get_renderer_type(&self) -> String {
-        self.gpu_backend_name.clone()
+    pub fn get_renderer_type(&self) -> &str {
+        "Software"
     }
 
-    /// Get GPU device name (if available)
-    pub fn get_device_name(&self) -> String {
-        self.gpu_device_name.clone()
-    }
-
-    /// Execute a custom GLSL-like fragment shader (CPU or GPU)
-    pub fn execute_shader(
-        &mut self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        shader: &dyn FragmentShader,
-    ) {
-        if self.has_gpu() {
-            // GPU path: compile and execute shader on GPU
-            // TODO: Implement GPU shader execution
-            self.execute_shader_cpu(x, y, width, height, shader);
-        } else {
-            // CPU path: execute shader per-pixel
-            self.execute_shader_cpu(x, y, width, height, shader);
-        }
-    }
-
-    /// Execute shader on CPU (software rendering)
-    fn execute_shader_cpu(
-        &mut self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        shader: &dyn FragmentShader,
-    ) {
-        let mut ctx = ShaderContext::new(Vec2::new(width as f32, height as f32));
-        
-        for py in 0..height {
-            for px in 0..width {
-                ctx.frag_coord = Vec2::new(px as f32, py as f32);
-                let color = shader.fragment(&ctx);
-                
-                // Convert Vec4 (0.0-1.0) to Color (0-255)
-                let r = (color.x * 255.0).clamp(0.0, 255.0) as u8;
-                let g = (color.y * 255.0).clamp(0.0, 255.0) as u8;
-                let b = (color.z * 255.0).clamp(0.0, 255.0) as u8;
-                let a = (color.w * 255.0).clamp(0.0, 255.0) as u8;
-                
-                if a > 0 {
-                    let pixel_color = Color::rgba(r, g, b, a);
-                    if a == 255 {
-                        self.set_pixel(x + px, y + py, pixel_color);
-                    } else {
-                        self.blend_pixel(x + px, y + py, pixel_color);
-                    }
-                }
-            }
-        }
+    pub fn get_device_name(&self) -> &str {
+        &self.renderer_name
     }
 
     pub fn clear(&mut self, color: Color) {
-        for y in 0..self.height {
-            for x in 0..self.width {
-                self.set_pixel(x as i32, y as i32, color);
-            }
+        for chunk in self.buffer.chunks_exact_mut(4) {
+            chunk[0] = color.b;
+            chunk[1] = color.g;
+            chunk[2] = color.r;
+            chunk[3] = color.a;
         }
     }
 
@@ -145,79 +73,6 @@ impl<'a> Canvas<'a> {
         for py in y..(y + height) {
             for px in x..(x + width) {
                 self.set_pixel(px, py, color);
-            }
-        }
-    }
-
-    pub fn fill_rect_with_effect(
-        &mut self,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        color: Color,
-        effect: &ShaderEffect,
-    ) {
-        match effect.effect_type {
-            crate::core::gpu::shader::ShaderEffectType::Blur => {
-                // Software blur: draw with slight transparency and offset
-                self.fill_rect(x, y, width, height, color);
-                let blur_color = Color::rgba(color.r, color.g, color.b, 30);
-                for offset in 1..3 {
-                    self.fill_rect(x - offset, y - offset, width + offset * 2, height + offset * 2, blur_color);
-                }
-            }
-            crate::core::gpu::shader::ShaderEffectType::Glow => {
-                // Software glow: draw base + brighter outer glow
-                let glow_intensity = effect.parameters.glow_intensity;
-                let glow_r = (color.r as f32 * glow_intensity).min(255.0) as u8;
-                let glow_g = (color.g as f32 * glow_intensity).min(255.0) as u8;
-                let glow_b = (color.b as f32 * glow_intensity).min(255.0) as u8;
-                
-                // Draw glow layers
-                for i in (0..6).rev() {
-                    let alpha = (50.0 * (i as f32 / 6.0)) as u8;
-                    let glow_color = Color::rgba(glow_r, glow_g, glow_b, alpha);
-                    self.fill_rect(x - i, y - i, width + i * 2, height + i * 2, glow_color);
-                }
-                
-                // Draw main rect
-                self.fill_rect(x, y, width, height, color);
-            }
-            crate::core::gpu::shader::ShaderEffectType::Brightness => {
-                let brightness = effect.parameters.brightness;
-                let bright_r = (color.r as f32 * brightness).min(255.0) as u8;
-                let bright_g = (color.g as f32 * brightness).min(255.0) as u8;
-                let bright_b = (color.b as f32 * brightness).min(255.0) as u8;
-                let bright_color = Color::rgba(bright_r, bright_g, bright_b, color.a);
-                self.fill_rect(x, y, width, height, bright_color);
-            }
-            crate::core::gpu::shader::ShaderEffectType::Contrast => {
-                let contrast = effect.parameters.contrast;
-                let adjust = |c: u8| -> u8 {
-                    let normalized = (c as f32 / 255.0 - 0.5) * contrast + 0.5;
-                    (normalized * 255.0).max(0.0).min(255.0) as u8
-                };
-                let contrast_color = Color::rgba(
-                    adjust(color.r),
-                    adjust(color.g),
-                    adjust(color.b),
-                    color.a,
-                );
-                self.fill_rect(x, y, width, height, contrast_color);
-            }
-            crate::core::gpu::shader::ShaderEffectType::Desaturate => {
-                let saturation = effect.parameters.saturation;
-                let gray = (color.r as f32 * 0.299 + color.g as f32 * 0.587 + color.b as f32 * 0.114) as u8;
-                let desat_r = (gray as f32 * (1.0 - saturation) + color.r as f32 * saturation) as u8;
-                let desat_g = (gray as f32 * (1.0 - saturation) + color.g as f32 * saturation) as u8;
-                let desat_b = (gray as f32 * (1.0 - saturation) + color.b as f32 * saturation) as u8;
-                let desat_color = Color::rgba(desat_r, desat_g, desat_b, color.a);
-                self.fill_rect(x, y, width, height, desat_color);
-            }
-            _ => {
-                // Fallback to basic rendering
-                self.fill_rect(x, y, width, height, color);
             }
         }
     }
@@ -249,21 +104,17 @@ impl<'a> Canvas<'a> {
                             + (dy - center_y) * (dy - center_y))
                             as f32)
                             .sqrt();
-                        let radius_f = radius as f32;
 
-                        if dist <= radius_f {
-                            let px = corner_x + dx;
-                            let py = corner_y + dy;
-
-                            // Anti-aliasing at edges
-                            if dist > radius_f - 1.5 {
-                                let alpha = ((radius_f - dist) * 255.0).max(0.0).min(255.0) as u8;
-                                let alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
-                                let blended = Color::rgba(color.r, color.g, color.b, alpha);
-                                self.blend_pixel(px, py, blended);
+                        if dist <= radius as f32 {
+                            let alpha = if dist >= radius as f32 - 1.0 {
+                                ((radius as f32 - dist) * 255.0) as u8
                             } else {
-                                self.set_pixel(px, py, color);
-                            }
+                                255
+                            };
+
+                            let aa_color = Color::rgba(color.r, color.g, color.b, 
+                                ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8);
+                            self.blend_pixel(corner_x + dx, corner_y + dy, aa_color);
                         }
                     }
                 }
@@ -287,19 +138,17 @@ impl<'a> Canvas<'a> {
 
         for py in 0..height {
             for px in 0..width {
-                // Calculate position along gradient direction
-                let nx = px as f32 / width as f32 - 0.5;
-                let ny = py as f32 / height as f32 - 0.5;
-                let t = (nx * cos_a + ny * sin_a + 0.5).max(0.0).min(1.0);
+                let fx = px as f32 / width as f32;
+                let fy = py as f32 / height as f32;
 
-                // Interpolate colors
+                let t = (fx * cos_a + fy * sin_a).clamp(0.0, 1.0);
+
                 let r = (start_color.r as f32 * (1.0 - t) + end_color.r as f32 * t) as u8;
                 let g = (start_color.g as f32 * (1.0 - t) + end_color.g as f32 * t) as u8;
                 let b = (start_color.b as f32 * (1.0 - t) + end_color.b as f32 * t) as u8;
                 let a = (start_color.a as f32 * (1.0 - t) + end_color.a as f32 * t) as u8;
-                let color = Color::rgba(r, g, b, a);
 
-                self.set_pixel(x + px, y + py, color);
+                self.set_pixel(x + px, y + py, Color::rgba(r, g, b, a));
             }
         }
     }
@@ -323,6 +172,34 @@ impl<'a> Canvas<'a> {
         self.fill_rect(x + width - thickness, y, thickness, height, color);
     }
 
+    pub fn draw_line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
+        let dx = (x2 - x1).abs();
+        let dy = (y2 - y1).abs();
+        let sx = if x1 < x2 { 1 } else { -1 };
+        let sy = if y1 < y2 { 1 } else { -1 };
+        let mut err = dx - dy;
+        let mut x = x1;
+        let mut y = y1;
+
+        loop {
+            self.set_pixel(x, y, color);
+
+            if x == x2 && y == y2 {
+                break;
+            }
+
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
     pub fn draw_shadow(
         &mut self,
         x: i32,
@@ -332,55 +209,66 @@ impl<'a> Canvas<'a> {
         blur: i32,
         color: Color,
     ) {
+        // Limit blur radius for performance (max 8 pixels)
+        let blur = blur.min(8);
+        
+        // Skip if blur is too small to be visible
+        if blur < 2 {
+            return;
+        }
+        
         // Step 1: Create alpha-only texture for the shape
         let mut alpha_map = vec![0u8; (width * height) as usize];
         
         // Fill the shape area with full alpha
+        for idx in 0..(width * height) as usize {
+            alpha_map[idx] = 255;
+        }
+        
+        // Step 2: Blur the alpha texture (fast box blur with reduced quality)
+        let mut blurred_alpha = alpha_map.clone();
+        
+        // Use smaller blur radius for performance (divide by 2)
+        let fast_blur = (blur / 2).max(1);
+        
+        // Horizontal pass
+        let mut temp = vec![0u8; (width * height) as usize];
         for py in 0..height {
             for px in 0..width {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                
+                let start_x = (px - fast_blur).max(0);
+                let end_x = (px + fast_blur).min(width - 1);
+                
+                for sample_x in start_x..=end_x {
+                    let idx = (py * width + sample_x) as usize;
+                    sum += alpha_map[idx] as u32;
+                    count += 1;
+                }
+                
                 let idx = (py * width + px) as usize;
-                alpha_map[idx] = 255;
+                temp[idx] = (sum / count) as u8;
             }
         }
         
-        // Step 2: Blur the alpha texture (box blur for performance)
-        let mut blurred_alpha = alpha_map.clone();
-        if blur > 0 {
-            // Horizontal pass
-            let mut temp = vec![0u8; (width * height) as usize];
-            for py in 0..height {
-                for px in 0..width {
-                    let mut sum = 0u32;
-                    let mut count = 0u32;
-                    
-                    for dx in -blur..=blur {
-                        let sample_x = (px + dx).max(0).min(width - 1);
-                        let idx = (py * width + sample_x) as usize;
-                        sum += alpha_map[idx] as u32;
-                        count += 1;
-                    }
-                    
-                    let idx = (py * width + px) as usize;
-                    temp[idx] = (sum / count) as u8;
+        // Vertical pass
+        for py in 0..height {
+            for px in 0..width {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                
+                let start_y = (py - fast_blur).max(0);
+                let end_y = (py + fast_blur).min(height - 1);
+                
+                for sample_y in start_y..=end_y {
+                    let idx = (sample_y * width + px) as usize;
+                    sum += temp[idx] as u32;
+                    count += 1;
                 }
-            }
-            
-            // Vertical pass
-            for py in 0..height {
-                for px in 0..width {
-                    let mut sum = 0u32;
-                    let mut count = 0u32;
-                    
-                    for dy in -blur..=blur {
-                        let sample_y = (py + dy).max(0).min(height - 1);
-                        let idx = (sample_y * width + px) as usize;
-                        sum += temp[idx] as u32;
-                        count += 1;
-                    }
-                    
-                    let idx = (py * width + px) as usize;
-                    blurred_alpha[idx] = (sum / count) as u8;
-                }
+                
+                let idx = (py * width + px) as usize;
+                blurred_alpha[idx] = (sum / count) as u8;
             }
         }
         
@@ -391,44 +279,25 @@ impl<'a> Canvas<'a> {
                 let idx = (py * width + px) as usize;
                 let alpha = blurred_alpha[idx];
                 
-                if alpha > 0 {
-                    // Apply shadow color with blurred alpha
-                    let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
-                    let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
-                    
-                    // Composite under the card (offset by shadow distance)
-                    self.blend_pixel(
-                        x + px + shadow_offset,
-                        y + py + shadow_offset,
-                        shadow_color,
-                    );
+                // Skip fully transparent pixels
+                if alpha < 5 {
+                    continue;
                 }
+                
+                // Apply shadow color with blurred alpha
+                let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
+                let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                
+                // Composite under the card (offset by shadow distance)
+                self.blend_pixel(
+                    x + px + shadow_offset,
+                    y + py + shadow_offset,
+                    shadow_color,
+                );
             }
         }
     }
 
-    pub fn blend_pixel(&mut self, x: i32, y: i32, color: Color) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-            return;
-        }
-
-        let offset = (y as u32 * self.width + x as u32) as usize * 4;
-        let alpha = color.a as f32 / 255.0;
-        let inv_alpha = 1.0 - alpha;
-
-        self.buffer[offset] =
-            ((self.buffer[offset] as f32 * inv_alpha) + (color.b as f32 * alpha)) as u8;
-        self.buffer[offset + 1] =
-            ((self.buffer[offset + 1] as f32 * inv_alpha) + (color.g as f32 * alpha)) as u8;
-        self.buffer[offset + 2] =
-            ((self.buffer[offset + 2] as f32 * inv_alpha) + (color.r as f32 * alpha)) as u8;
-    }
-
-    pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        self.buffer
-    }
-
-    /// Draw shadow with rounded corners support
     pub fn draw_rounded_shadow(
         &mut self,
         x: i32,
@@ -439,6 +308,19 @@ impl<'a> Canvas<'a> {
         blur: i32,
         color: Color,
     ) {
+        let shadow_start = std::time::Instant::now();
+        
+        // Limit blur radius for performance (max 8 pixels)
+        let blur = blur.min(8);
+        
+        // Skip if blur is too small to be visible
+        if blur < 2 {
+            return;
+        }
+        
+        debug_log!("draw_rounded_shadow: {}x{} at ({},{}) blur={} radius={}", 
+                  width, height, x, y, blur, radius);
+        
         // Step 1: Create alpha-only texture for rounded rect shape
         let mut alpha_map = vec![0u8; (width * height) as usize];
         let radius = radius as i32;
@@ -466,9 +348,10 @@ impl<'a> Canvas<'a> {
                     for (cx, cy) in corners {
                         let dx = px - cx;
                         let dy = py - cy;
-                        let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                        let dist_sq = dx * dx + dy * dy;
+                        let radius_sq = radius * radius;
                         
-                        if dist <= radius as f32 {
+                        if dist_sq <= radius_sq {
                             alpha_map[idx] = 255;
                             break;
                         }
@@ -477,44 +360,50 @@ impl<'a> Canvas<'a> {
             }
         }
         
-        // Step 2: Blur the alpha texture (separable box blur)
+        // Step 2: Blur the alpha texture (fast box blur with reduced quality)
         let mut blurred_alpha = alpha_map.clone();
-        if blur > 0 {
-            // Horizontal pass
-            let mut temp = vec![0u8; (width * height) as usize];
-            for py in 0..height {
-                for px in 0..width {
-                    let mut sum = 0u32;
-                    let mut count = 0u32;
-                    
-                    for dx in -blur..=blur {
-                        let sample_x = (px + dx).max(0).min(width - 1);
-                        let idx = (py * width + sample_x) as usize;
-                        sum += alpha_map[idx] as u32;
-                        count += 1;
-                    }
-                    
-                    let idx = (py * width + px) as usize;
-                    temp[idx] = (sum / count) as u8;
+        
+        // Use smaller blur radius for performance (divide by 2)
+        let fast_blur = (blur / 2).max(1);
+        
+        // Horizontal pass
+        let mut temp = vec![0u8; (width * height) as usize];
+        for py in 0..height {
+            for px in 0..width {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                
+                let start_x = (px - fast_blur).max(0);
+                let end_x = (px + fast_blur).min(width - 1);
+                
+                for sample_x in start_x..=end_x {
+                    let idx = (py * width + sample_x) as usize;
+                    sum += alpha_map[idx] as u32;
+                    count += 1;
                 }
+                
+                let idx = (py * width + px) as usize;
+                temp[idx] = (sum / count) as u8;
             }
-            
-            // Vertical pass
-            for py in 0..height {
-                for px in 0..width {
-                    let mut sum = 0u32;
-                    let mut count = 0u32;
-                    
-                    for dy in -blur..=blur {
-                        let sample_y = (py + dy).max(0).min(height - 1);
-                        let idx = (sample_y * width + px) as usize;
-                        sum += temp[idx] as u32;
-                        count += 1;
-                    }
-                    
-                    let idx = (py * width + px) as usize;
-                    blurred_alpha[idx] = (sum / count) as u8;
+        }
+        
+        // Vertical pass
+        for py in 0..height {
+            for px in 0..width {
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                
+                let start_y = (py - fast_blur).max(0);
+                let end_y = (py + fast_blur).min(height - 1);
+                
+                for sample_y in start_y..=end_y {
+                    let idx = (sample_y * width + px) as usize;
+                    sum += temp[idx] as u32;
+                    count += 1;
                 }
+                
+                let idx = (py * width + px) as usize;
+                blurred_alpha[idx] = (sum / count) as u8;
             }
         }
         
@@ -525,20 +414,46 @@ impl<'a> Canvas<'a> {
                 let idx = (py * width + px) as usize;
                 let alpha = blurred_alpha[idx];
                 
-                if alpha > 0 {
-                    // Apply shadow color with blurred alpha
-                    let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
-                    let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
-                    
-                    // Composite under the card (offset by shadow distance)
-                    self.blend_pixel(
-                        x + px + shadow_offset,
-                        y + py + shadow_offset,
-                        shadow_color,
-                    );
+                // Skip fully transparent pixels
+                if alpha < 5 {
+                    continue;
                 }
+                
+                // Apply shadow color with blurred alpha
+                let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
+                let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                
+                // Composite under the card (offset by shadow distance)
+                self.blend_pixel(
+                    x + px + shadow_offset,
+                    y + py + shadow_offset,
+                    shadow_color,
+                );
             }
         }
+        
+        let shadow_elapsed = shadow_start.elapsed();
+        debug_log!("Shadow rendering took: {:.2}ms", shadow_elapsed.as_secs_f64() * 1000.0);
     }
 
+    pub fn blend_pixel(&mut self, x: i32, y: i32, color: Color) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+
+        let offset = (y as u32 * self.width + x as u32) as usize * 4;
+        let alpha = color.a as f32 / 255.0;
+        let inv_alpha = 1.0 - alpha;
+
+        self.buffer[offset] =
+            ((self.buffer[offset] as f32 * inv_alpha) + (color.b as f32 * alpha)) as u8;
+        self.buffer[offset + 1] =
+            ((self.buffer[offset + 1] as f32 * inv_alpha) + (color.g as f32 * alpha)) as u8;
+        self.buffer[offset + 2] =
+            ((self.buffer[offset + 2] as f32 * inv_alpha) + (color.r as f32 * alpha)) as u8;
+    }
+
+    pub fn as_slice_mut(&mut self) -> &mut [u8] {
+        self.buffer
+    }
 }
