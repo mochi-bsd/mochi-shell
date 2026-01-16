@@ -117,6 +117,10 @@ pub struct Text {
     pub size: f32,
     pub color: Color,
     pub font: String,
+    pub shadow: bool,
+    pub shadow_offset: (i32, i32),
+    pub shadow_color: Color,
+    pub shadow_blur: i32,
 }
 
 impl Text {
@@ -128,6 +132,10 @@ impl Text {
             size: 16.0,
             color: Color::TEXT_PRIMARY,
             font: "regular".to_string(),
+            shadow: false,
+            shadow_offset: (2, 2),
+            shadow_color: Color::rgba(0, 0, 0, 128),
+            shadow_blur: 2,
         }
     }
 
@@ -145,10 +153,101 @@ impl Text {
         self.font = font.into();
         self
     }
+
+    pub fn shadow(mut self, enabled: bool) -> Self {
+        self.shadow = enabled;
+        self
+    }
+
+    pub fn shadow_offset(mut self, x: i32, y: i32) -> Self {
+        self.shadow_offset = (x, y);
+        self
+    }
+
+    pub fn shadow_color(mut self, color: Color) -> Self {
+        self.shadow_color = color;
+        self
+    }
+
+    pub fn shadow_blur(mut self, blur: i32) -> Self {
+        self.shadow_blur = blur;
+        self
+    }
 }
 
 impl Element for Text {
     fn render(&self, canvas: &mut Canvas, text_renderer: &TextRenderer) {
+        // Render shadow first (behind the text) if enabled
+        if self.shadow && self.shadow_blur > 0 {
+            // Proper box blur with horizontal and vertical passes
+            let blur_radius = self.shadow_blur.min(4); // Limit to 4 for performance
+            
+            // Box blur: uniform weight distribution
+            let weight = 1.0 / ((blur_radius * 2 + 1) as f32);
+            
+            // Horizontal pass
+            for dx in -blur_radius..=blur_radius {
+                let shadow_alpha = ((self.shadow_color.a as f32 * weight * 0.5).min(50.0)) as u8;
+                
+                if shadow_alpha > 1 {
+                    let blur_color = Color::rgba(
+                        self.shadow_color.r,
+                        self.shadow_color.g,
+                        self.shadow_color.b,
+                        shadow_alpha,
+                    );
+                    
+                    text_renderer.render(
+                        canvas,
+                        &self.text,
+                        self.x + self.shadow_offset.0 + dx,
+                        self.y + self.shadow_offset.1,
+                        self.size,
+                        blur_color,
+                        &self.font,
+                    );
+                }
+            }
+            
+            // Vertical pass
+            for dy in -blur_radius..=blur_radius {
+                if dy == 0 { continue; } // Skip center, already done in horizontal
+                
+                let shadow_alpha = ((self.shadow_color.a as f32 * weight * 0.5).min(50.0)) as u8;
+                
+                if shadow_alpha > 1 {
+                    let blur_color = Color::rgba(
+                        self.shadow_color.r,
+                        self.shadow_color.g,
+                        self.shadow_color.b,
+                        shadow_alpha,
+                    );
+                    
+                    text_renderer.render(
+                        canvas,
+                        &self.text,
+                        self.x + self.shadow_offset.0,
+                        self.y + self.shadow_offset.1 + dy,
+                        self.size,
+                        blur_color,
+                        &self.font,
+                    );
+                }
+            }
+        } else if self.shadow {
+            // Simple shadow without blur
+            text_renderer.render(
+                canvas,
+                &self.text,
+                self.x + self.shadow_offset.0,
+                self.y + self.shadow_offset.1,
+                self.size,
+                self.shadow_color,
+                &self.font,
+            );
+        }
+        
+        // ALWAYS render main text on top - this is the foreground layer
         text_renderer.render(
             canvas, &self.text, self.x, self.y, self.size, self.color, &self.font,
         );

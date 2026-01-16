@@ -54,7 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .at(60, 80)
                             .size(42.0)
                             .color(Color::TEXT_PRIMARY)
-                            .font("semibold"),
+                            .font("semibold")
+                            .shadow(true)
+                            .shadow_offset(3, 3)
+                            .shadow_blur(3)
+                            .shadow_color(Color::rgba(0, 0, 0, 100)),
                     )
                     .child(
                         text(
@@ -64,7 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .at(60, 140)
                         .size(20.0)
                         .color(Color::TEXT_TERTIARY)
-                        .font("regular"),
+                        .font("regular")
+                        .shadow(true)
+                        .shadow_offset(2, 2)
+                        .shadow_blur(2)
+                        .shadow_color(Color::rgba(0, 0, 0, 80)),
                     )
                     .child(
                         vstack(0, 0)

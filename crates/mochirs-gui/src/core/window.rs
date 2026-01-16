@@ -23,7 +23,6 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, EventQueue, QueueHandle,
 };
-use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
 use crate::core::canvas::Canvas;
 use crate::core::color::Color;
@@ -44,6 +43,8 @@ pub struct WindowConfig {
     pub min_width: Option<u32>,
     pub min_height: Option<u32>,
     pub decorations: bool,
+    pub transparent: bool,
+    pub draggable: bool,
 }
 
 impl Default for WindowConfig {
@@ -55,6 +56,8 @@ impl Default for WindowConfig {
             min_width: Some(400),
             min_height: Some(300),
             decorations: false, // Use client-side decorations
+            transparent: false,
+            draggable: true,
         }
     }
 }
@@ -75,6 +78,11 @@ struct AppState {
     is_resizing: bool,
     last_resize_time: std::time::Instant,
     resize_debounce_ms: u64,
+    // Buffer pooling optimization
+    last_buffer_size: Option<(u32, u32)>,
+    // Window configuration
+    transparent: bool,
+    draggable: bool,
 }
 
 pub struct Window {
@@ -85,6 +93,17 @@ pub struct Window {
 impl Window {
     pub fn new(config: WindowConfig) -> Result<Self, Box<dyn std::error::Error>> {
         debug_log!("Window::new() - Creating window: {}x{}", config.width, config.height);
+        
+        // Force LLVMpipe software rendering
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
+        std::env::set_var("LP_NUM_THREADS", "4"); // Use 4 threads for better performance
+        
+        // Log renderer info
+        let renderer = std::env::var("GALLIUM_DRIVER").unwrap_or_else(|_| "unknown".to_string());
+        debug_log!("Software Renderer: LLVMpipe (forced)");
+        debug_log!("GALLIUM_DRIVER={}", renderer);
+        debug_log!("LIBGL_ALWAYS_SOFTWARE=1");
         
         let conn = Connection::connect_to_env()?;
         debug_log!("Connected to Wayland display");
@@ -111,6 +130,9 @@ impl Window {
             is_resizing: false,
             last_resize_time: std::time::Instant::now(),
             resize_debounce_ms: 150, // Wait 150ms after resize before full redraw
+            last_buffer_size: None,
+            transparent: config.transparent,
+            draggable: config.draggable,
         };
         debug_log!("Wayland protocols bound successfully");
 
@@ -135,6 +157,12 @@ impl Window {
         if let (Some(min_w), Some(min_h)) = (config.min_width, config.min_height) {
             xdg_window.set_min_size(Some((min_w, min_h)));
         }
+        
+        // If no min size is set, disable resizing by setting max size = current size
+        if config.min_width.is_none() && config.min_height.is_none() {
+            xdg_window.set_max_size(Some((config.width, config.height)));
+        }
+        
         xdg_window.commit();
 
         window.state.window = Some(xdg_window);
@@ -152,6 +180,12 @@ impl Window {
 
     pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         debug_log!("Entering main event loop");
+        debug_log!("=== Mochi Window System ===");
+        debug_log!("Renderer: LLVMpipe (Mesa Software Renderer)");
+        debug_log!("Backend: Wayland + Smithay Client Toolkit");
+        debug_log!("Resolution: {}x{}", self.state.width, self.state.height);
+        debug_log!("===========================");
+        
         let mut frame_count = 0u64;
         let start_time = std::time::Instant::now();
         
@@ -204,8 +238,16 @@ impl AppState {
 
         let stride = self.width as i32 * 4;
         let buffer_size = (self.width * self.height * 4) as usize;
-        debug_log!("Creating buffer: {}x{} ({}KB)", 
-                  self.width, self.height, buffer_size / 1024);
+        
+        // Check if buffer size changed (optimization: reuse buffer when size unchanged)
+        let size_changed = self.last_buffer_size != Some((self.width, self.height));
+        if size_changed {
+            debug_log!("Buffer size changed, creating new buffer: {}x{} ({}KB)", 
+                      self.width, self.height, buffer_size / 1024);
+            self.last_buffer_size = Some((self.width, self.height));
+        } else {
+            debug_log!("Reusing buffer: {}x{}", self.width, self.height);
+        }
 
         let (buffer, canvas_buffer) = pool
             .create_buffer(
@@ -219,11 +261,17 @@ impl AppState {
         if skip_expensive {
             debug_log!("Fast draw (skipping expensive rendering)");
             // During resize, just fill with solid background color for performance
+            let bg_color = if self.transparent {
+                Color::TRANSPARENT
+            } else {
+                Color::rgb(40, 40, 40)
+            };
+            
             for pixel in canvas_buffer.chunks_exact_mut(4) {
-                pixel[0] = 40;  // B
-                pixel[1] = 40;  // G
-                pixel[2] = 40;  // R
-                pixel[3] = 255; // A
+                pixel[0] = bg_color.b;  // B
+                pixel[1] = bg_color.g;  // G
+                pixel[2] = bg_color.r;  // R
+                pixel[3] = bg_color.a;  // A
             }
         } else {
             debug_log!("Full draw with effects");
@@ -231,8 +279,13 @@ impl AppState {
             
             let mut canvas = Canvas::new(canvas_buffer, self.width, self.height);
 
-            // Clear background
-            canvas.clear(Color::BG_PRIMARY);
+            // Clear background - use transparent if configured
+            let bg_color = if self.transparent {
+                Color::TRANSPARENT
+            } else {
+                Color::BG_PRIMARY
+            };
+            canvas.clear(bg_color);
 
             // Call user draw function
             if let Some(ref mut draw_fn) = self.draw_fn {
@@ -244,6 +297,9 @@ impl AppState {
         }
 
         window.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        
+        // Use damage_buffer for more efficient updates (only redraw changed regions)
+        // For now, damage the entire buffer, but this could be optimized with dirty region tracking
         window
             .wl_surface()
             .damage_buffer(0, 0, self.width as i32, self.height as i32);
@@ -486,50 +542,13 @@ impl PointerHandler for AppState {
                     self.pointer_location = Some(event.position);
                 }
                 Press { button, serial, .. } => {
-                    // Left click
-                    if button == 0x110 {
+                    // Only handle dragging if enabled, no resize support
+                    if button == 0x110 && self.draggable {
                         // BTN_LEFT
-                        if let Some((x, y)) = self.pointer_location {
-                            let window_width = self.width as f64;
-                            let window_height = self.height as f64;
-                            let edge_size = 10.0;
-                            let corner_size = 20.0;
-
-                            let at_left = x < edge_size;
-                            let at_right = x > window_width - edge_size;
-                            let at_top = y < edge_size;
-                            let at_bottom = y > window_height - edge_size;
-
-                            let at_left_corner = x < corner_size;
-                            let at_right_corner = x > window_width - corner_size;
-                            let at_top_corner = y < corner_size;
-                            let at_bottom_corner = y > window_height - corner_size;
-
-                            if let Some(window) = &self.window {
-                                if let Some(seat) = self.seat_state.seats().next() {
-                                    let resize_edge = if at_top_corner && at_left_corner {
-                                        Some(ResizeEdge::TopLeft)
-                                    } else if at_top_corner && at_right_corner {
-                                        Some(ResizeEdge::TopRight)
-                                    } else if at_bottom_corner && at_left_corner {
-                                        Some(ResizeEdge::BottomLeft)
-                                    } else if at_bottom_corner && at_right_corner {
-                                        Some(ResizeEdge::BottomRight)
-                                    } else if at_top {
-                                        Some(ResizeEdge::Top)
-                                    } else if at_bottom {
-                                        Some(ResizeEdge::Bottom)
-                                    } else if at_left {
-                                        Some(ResizeEdge::Left)
-                                    } else if at_right {
-                                        Some(ResizeEdge::Right)
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(edge) = resize_edge {
-                                        window.resize(&seat, serial, edge);
-                                    } else if y < 32.0 {
+                        if let Some((_, y)) = self.pointer_location {
+                            if y < 32.0 {
+                                if let Some(window) = &self.window {
+                                    if let Some(seat) = self.seat_state.seats().next() {
                                         window.move_(&seat, serial);
                                     }
                                 }

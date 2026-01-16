@@ -24,7 +24,7 @@ impl<'a> Canvas<'a> {
             buffer,
             width,
             height,
-            renderer_name: "LLVMpipe Software Renderer".to_string(),
+            renderer_name: "LLVMpipe (Mesa Software Renderer)".to_string(),
         }
     }
 
@@ -209,91 +209,59 @@ impl<'a> Canvas<'a> {
         blur: i32,
         color: Color,
     ) {
-        // Limit blur radius for performance (max 8 pixels)
-        let blur = blur.min(8);
+        // Limit blur radius for performance on software renderer
+        let blur = blur.min(6).max(0);
         
-        // Skip if blur is too small to be visible
-        if blur < 2 {
+        if blur < 1 {
             return;
         }
         
-        // Step 1: Create alpha-only texture for the shape
-        let mut alpha_map = vec![0u8; (width * height) as usize];
+        // Small offset for shadow
+        let shadow_offset = (blur / 2).max(1);
+        let blur_f = blur as f32;
         
-        // Fill the shape area with full alpha
-        for idx in 0..(width * height) as usize {
-            alpha_map[idx] = 255;
-        }
-        
-        // Step 2: Blur the alpha texture (fast box blur with reduced quality)
-        let mut blurred_alpha = alpha_map.clone();
-        
-        // Use smaller blur radius for performance (divide by 2)
-        let fast_blur = (blur / 2).max(1);
-        
-        // Horizontal pass
-        let mut temp = vec![0u8; (width * height) as usize];
-        for py in 0..height {
-            for px in 0..width {
-                let mut sum = 0u32;
-                let mut count = 0u32;
+        // Render shadow with simple linear falloff - only outside the shape
+        for py in -blur..=(height + blur) {
+            for px in -blur..=(width + blur) {
+                // Calculate distance to nearest edge
+                let dx = if px < 0 {
+                    -px as f32
+                } else if px >= width {
+                    (px - width + 1) as f32
+                } else {
+                    0.0
+                };
                 
-                let start_x = (px - fast_blur).max(0);
-                let end_x = (px + fast_blur).min(width - 1);
+                let dy = if py < 0 {
+                    -py as f32
+                } else if py >= height {
+                    (py - height + 1) as f32
+                } else {
+                    0.0
+                };
                 
-                for sample_x in start_x..=end_x {
-                    let idx = (py * width + sample_x) as usize;
-                    sum += alpha_map[idx] as u32;
-                    count += 1;
-                }
+                let dist = (dx * dx + dy * dy).sqrt();
                 
-                let idx = (py * width + px) as usize;
-                temp[idx] = (sum / count) as u8;
-            }
-        }
-        
-        // Vertical pass
-        for py in 0..height {
-            for px in 0..width {
-                let mut sum = 0u32;
-                let mut count = 0u32;
-                
-                let start_y = (py - fast_blur).max(0);
-                let end_y = (py + fast_blur).min(height - 1);
-                
-                for sample_y in start_y..=end_y {
-                    let idx = (sample_y * width + px) as usize;
-                    sum += temp[idx] as u32;
-                    count += 1;
-                }
-                
-                let idx = (py * width + px) as usize;
-                blurred_alpha[idx] = (sum / count) as u8;
-            }
-        }
-        
-        // Step 3: Multiply shadow color by blurred alpha and composite
-        let shadow_offset = blur / 2;
-        for py in 0..height {
-            for px in 0..width {
-                let idx = (py * width + px) as usize;
-                let alpha = blurred_alpha[idx];
-                
-                // Skip fully transparent pixels
-                if alpha < 5 {
+                // Only render shadow OUTSIDE the shape
+                if dist <= 0.0 || dist > blur_f {
                     continue;
                 }
                 
-                // Apply shadow color with blurred alpha
-                let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
-                let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                // Simple linear falloff (no smoothstep, no pow)
+                let t = (dist / blur_f).min(1.0);
+                let falloff = 1.0 - t;
                 
-                // Composite under the card (offset by shadow distance)
-                self.blend_pixel(
-                    x + px + shadow_offset,
-                    y + py + shadow_offset,
-                    shadow_color,
-                );
+                // Clamp alpha to reasonable range
+                let shadow_alpha = (falloff * 0.4 * 255.0).min(100.0) as u8;
+                
+                if shadow_alpha > 1 {
+                    let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                    self.blend_pixel_premul(
+                        x + px + shadow_offset,
+                        y + py + shadow_offset,
+                        shadow_color,
+                    );
+                }
             }
         }
     }
@@ -308,132 +276,110 @@ impl<'a> Canvas<'a> {
         blur: i32,
         color: Color,
     ) {
-        let shadow_start = std::time::Instant::now();
+        // Limit blur radius for performance on software renderer
+        let blur = blur.min(6).max(0);
         
-        // Limit blur radius for performance (max 8 pixels)
-        let blur = blur.min(8);
-        
-        // Skip if blur is too small to be visible
-        if blur < 2 {
+        if blur < 1 {
             return;
         }
         
         debug_log!("draw_rounded_shadow: {}x{} at ({},{}) blur={} radius={}", 
                   width, height, x, y, blur, radius);
         
-        // Step 1: Create alpha-only texture for rounded rect shape
-        let mut alpha_map = vec![0u8; (width * height) as usize];
-        let radius = radius as i32;
+        let shadow_start = std::time::Instant::now();
         
-        // Fill main body
-        for py in 0..height {
-            for px in 0..width {
-                let idx = (py * width + px) as usize;
-                
-                // Check if pixel is inside rounded rectangle
-                let in_main_body = (px >= radius && px < width - radius) ||
-                                   (py >= radius && py < height - radius);
-                
-                if in_main_body {
-                    alpha_map[idx] = 255;
-                } else {
-                    // Check corners
-                    let corners = [
-                        (radius, radius),                    // Top-left
-                        (width - radius, radius),            // Top-right
-                        (radius, height - radius),           // Bottom-left
-                        (width - radius, height - radius),   // Bottom-right
-                    ];
-                    
-                    for (cx, cy) in corners {
-                        let dx = px - cx;
-                        let dy = py - cy;
-                        let dist_sq = dx * dx + dy * dy;
-                        let radius_sq = radius * radius;
-                        
-                        if dist_sq <= radius_sq {
-                            alpha_map[idx] = 255;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        // Small offset and radius for better performance
+        let shadow_offset = (blur / 2).max(1);
+        let blur_f = blur as f32;
+        let radius_i = (radius.min(8.0)) as i32;
         
-        // Step 2: Blur the alpha texture (fast box blur with reduced quality)
-        let mut blurred_alpha = alpha_map.clone();
-        
-        // Use smaller blur radius for performance (divide by 2)
-        let fast_blur = (blur / 2).max(1);
-        
-        // Horizontal pass
-        let mut temp = vec![0u8; (width * height) as usize];
-        for py in 0..height {
-            for px in 0..width {
-                let mut sum = 0u32;
-                let mut count = 0u32;
+        // Render shadow with simple linear falloff - only outside the shape
+        for py in -blur..=(height + blur) {
+            for px in -blur..=(width + blur) {
+                // Calculate distance to nearest point on the rounded rectangle
+                let dist = self.distance_to_rounded_rect(px, py, width, height, radius_i);
                 
-                let start_x = (px - fast_blur).max(0);
-                let end_x = (px + fast_blur).min(width - 1);
-                
-                for sample_x in start_x..=end_x {
-                    let idx = (py * width + sample_x) as usize;
-                    sum += alpha_map[idx] as u32;
-                    count += 1;
-                }
-                
-                let idx = (py * width + px) as usize;
-                temp[idx] = (sum / count) as u8;
-            }
-        }
-        
-        // Vertical pass
-        for py in 0..height {
-            for px in 0..width {
-                let mut sum = 0u32;
-                let mut count = 0u32;
-                
-                let start_y = (py - fast_blur).max(0);
-                let end_y = (py + fast_blur).min(height - 1);
-                
-                for sample_y in start_y..=end_y {
-                    let idx = (sample_y * width + px) as usize;
-                    sum += temp[idx] as u32;
-                    count += 1;
-                }
-                
-                let idx = (py * width + px) as usize;
-                blurred_alpha[idx] = (sum / count) as u8;
-            }
-        }
-        
-        // Step 3: Multiply shadow color by blurred alpha and composite
-        let shadow_offset = blur / 2;
-        for py in 0..height {
-            for px in 0..width {
-                let idx = (py * width + px) as usize;
-                let alpha = blurred_alpha[idx];
-                
-                // Skip fully transparent pixels
-                if alpha < 5 {
+                // Only render shadow OUTSIDE the shape (dist > 0)
+                if dist <= 0.0 || dist > blur_f {
                     continue;
                 }
                 
-                // Apply shadow color with blurred alpha
-                let shadow_alpha = ((alpha as f32 / 255.0) * (color.a as f32 / 255.0) * 255.0) as u8;
-                let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                // Simple linear falloff (no smoothstep, no pow)
+                let t = (dist / blur_f).min(1.0);
+                let falloff = 1.0 - t;
                 
-                // Composite under the card (offset by shadow distance)
-                self.blend_pixel(
-                    x + px + shadow_offset,
-                    y + py + shadow_offset,
-                    shadow_color,
-                );
+                // Clamp alpha to reasonable range
+                let shadow_alpha = (falloff * 0.4 * 255.0).min(100.0) as u8;
+                
+                if shadow_alpha > 1 {
+                    let shadow_color = Color::rgba(color.r, color.g, color.b, shadow_alpha);
+                    self.blend_pixel_premul(
+                        x + px + shadow_offset,
+                        y + py + shadow_offset,
+                        shadow_color,
+                    );
+                }
             }
         }
         
         let shadow_elapsed = shadow_start.elapsed();
         debug_log!("Shadow rendering took: {:.2}ms", shadow_elapsed.as_secs_f64() * 1000.0);
+    }
+    
+    // Helper function to calculate signed distance from a point to a rounded rectangle
+    // Returns negative if inside, positive if outside
+    fn distance_to_rounded_rect(&self, px: i32, py: i32, width: i32, height: i32, radius: i32) -> f32 {
+        // Check if we're in a corner region
+        let in_top_left = px < radius && py < radius;
+        let in_top_right = px >= width - radius && py < radius;
+        let in_bottom_left = px < radius && py >= height - radius;
+        let in_bottom_right = px >= width - radius && py >= height - radius;
+        
+        if in_top_left {
+            let dx = px - radius;
+            let dy = py - radius;
+            let corner_dist = ((dx * dx + dy * dy) as f32).sqrt();
+            corner_dist - radius as f32
+        } else if in_top_right {
+            let dx = px - (width - radius - 1);
+            let dy = py - radius;
+            let corner_dist = ((dx * dx + dy * dy) as f32).sqrt();
+            corner_dist - radius as f32
+        } else if in_bottom_left {
+            let dx = px - radius;
+            let dy = py - (height - radius - 1);
+            let corner_dist = ((dx * dx + dy * dy) as f32).sqrt();
+            corner_dist - radius as f32
+        } else if in_bottom_right {
+            let dx = px - (width - radius - 1);
+            let dy = py - (height - radius - 1);
+            let corner_dist = ((dx * dx + dy * dy) as f32).sqrt();
+            corner_dist - radius as f32
+        } else {
+            // Not in a corner, calculate distance to nearest edge
+            let dx = if px < 0 {
+                -px as f32
+            } else if px >= width {
+                (px - width + 1) as f32
+            } else {
+                0.0
+            };
+            
+            let dy = if py < 0 {
+                -py as f32
+            } else if py >= height {
+                (py - height + 1) as f32
+            } else {
+                0.0
+            };
+            
+            // If inside the main body, return negative distance
+            if dx == 0.0 && dy == 0.0 {
+                -1.0
+            } else {
+                (dx * dx + dy * dy).sqrt()
+            }
+        }
     }
 
     pub fn blend_pixel(&mut self, x: i32, y: i32, color: Color) {
@@ -451,6 +397,27 @@ impl<'a> Canvas<'a> {
             ((self.buffer[offset + 1] as f32 * inv_alpha) + (color.g as f32 * alpha)) as u8;
         self.buffer[offset + 2] =
             ((self.buffer[offset + 2] as f32 * inv_alpha) + (color.r as f32 * alpha)) as u8;
+    }
+    
+    // Premultiplied alpha blending - optimized for software rendering
+    pub fn blend_pixel_premul(&mut self, x: i32, y: i32, color: Color) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+
+        let offset = (y as u32 * self.width + x as u32) as usize * 4;
+        
+        // Clamp alpha
+        let alpha = (color.a as u32).min(255);
+        let inv_alpha = 255 - alpha;
+        
+        // Premultiplied alpha blend using integer math (faster on software renderer)
+        self.buffer[offset] = 
+            (((self.buffer[offset] as u32 * inv_alpha) + (color.b as u32 * alpha)) / 255) as u8;
+        self.buffer[offset + 1] = 
+            (((self.buffer[offset + 1] as u32 * inv_alpha) + (color.g as u32 * alpha)) / 255) as u8;
+        self.buffer[offset + 2] = 
+            (((self.buffer[offset + 2] as u32 * inv_alpha) + (color.r as u32 * alpha)) / 255) as u8;
     }
 
     pub fn as_slice_mut(&mut self) -> &mut [u8] {

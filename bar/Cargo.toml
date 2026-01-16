@@ -1,19 +1,13 @@
 [package]
 name = "bar"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
 name = "bar"
 path = "src/main.rs"
 
-[[bin]]
-name = "shell"
-path = "shell/main.rs"
-
 [dependencies]
-gpui = { path = "../external/zed/crates/gpui" }
-gpui-component = { path = "../external/gpui-component/crates/ui" }
+mochirs-gui = { path = "../crates/mochirs-gui" }
 chrono = "0.4"
-anyhow = "1.0"
 

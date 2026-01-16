@@ -1,5 +1,5 @@
 [package]
-name = "mochi-rs"
+name = "mochirs-gui"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,7 +12,7 @@ name = "mochi-demo"
 path = "src/main.rs"
 
 [dependencies]
-smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+smithay-client-toolkit = { path = "../../modules/client-toolkit" , default-features = false, features = ["calloop"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
 fontdue = "0.9"
